@@ -44,8 +44,6 @@ CANDIDATO = sa.Table('CANDIDATO', METADATA,
 VOTACAO = sa.Table('VOTACAO', METADATA,
                    sa.Column('id', sa.Integer, primary_key=True),
                    sa.Column('data_geracao', sa.DateTime),
-                   sa.Column('eleicao_id', sa.Integer,
-                             sa.ForeignKey('ELEICAO.id')),
                    sa.Column('numero_zona', sa.Integer),
                    sa.Column('candidato_id', sa.Integer,
                              sa.ForeignKey('CANDIDATO.id')),
@@ -79,18 +77,13 @@ COLIGACAO_COMPOSICAO = sa.Table(
     sa.Column('numero_partido', sa.Integer,
               sa.ForeignKey('PARTIDO.numero_partido')))
 
-ZONA_ELEITORAL = sa.Table('ZONA_ELEITORAL', METADATA,
-                          sa.Column('id', sa.Integer, primary_key=True),
-                          sa.Column('numero_zona', sa.Integer),
-                          sa.Column('bairro_id', sa.Integer,
-                                    sa.ForeignKey('BAIRRO.id')))
-
-BAIRRO = sa.Table('BAIRRO', METADATA,
-                  sa.Column('id', sa.Integer, primary_key=True),
-                  sa.Column('codigo_municipio', sa.Integer,
-                            sa.ForeignKey('MUNICIPIO.codigo_municipio')),
-                  sa.Column('nome', sa.String(50)),
-                  sa.Column('renda', sa.Float))
+RENDA = sa.Table('RENDA', METADATA,
+                 sa.Column('id', sa.Integer, primary_key=True),
+                 sa.Column('codigo_municipio', sa.Integer,
+                           sa.ForeignKey('MUNICIPIO.codigo_municipio')),
+                 sa.Column('valor_renda', sa.Float),
+                 sa.Column('bairro', sa.String(50)),
+                 sa.Column('numero_zona', sa.Integer))
 
 
 class DadosCandidato(
@@ -158,8 +151,7 @@ class Candidato(
 
 class Votacao(
         collections.namedtuple('Votacao', [
-            'id', 'data_geracao', 'eleicao_id', 'numero_zona', 'candidato_id',
-            'total_votos'
+            'id', 'data_geracao', 'numero_zona', 'candidato_id', 'total_votos'
         ])):
     """Representa uma votação."""
 
@@ -190,14 +182,15 @@ class Coligacao(
 
 class ZonaEleitoral(
         collections.namedtuple('ZonaEleitoral',
-                               ['id', 'numero_zona', 'bairro_id'])):
+                               ['codigo_municipio', 'numero_zona', 'bairro'])):
     """Representa uma zona eleitoral."""
 
 
-class Bairro(
-        collections.namedtuple('Bairro',
-                               ['id', 'codigo_municipio', 'nome', 'renda'])):
-    """Representa um bairro."""
+class Renda(
+        collections.namedtuple('Renda', [
+            'id', 'codigo_municipio', 'valor_renda', 'bairro', 'numero_zona'
+        ])):
+    """Representa uma renda."""
 
 
 def carrega_base_candidato(filename):
@@ -271,7 +264,7 @@ def recupera_votacao(dados, votacoes, eleicao_id, candidato_por_chave):
     candidato = candidato_por_chave[eleicao_id, dados.numero_cand]
     votacao_id = len(votacoes) + 1
     votacoes.append(
-        Votacao(votacao_id, dados.data_geracao, eleicao_id, dados.numero_zona,
+        Votacao(votacao_id, dados.data_geracao, dados.numero_zona,
                 candidato.id, dados.total_votos))
 
 
@@ -306,45 +299,44 @@ def recupera_coligacao(dados, coligacao_por_numero):
             composicao_coligacao=dados.composicao_legenda)
 
 
-def recupera_bairros():
-    """Retorna dict de (codigo_municipio,nome) para bairro."""
-    linhas = [i.strip() for i in dados_rj.renda.split(';')][:-1]
-
-    bairro_id = 1
-    bairro_por_chave = {}
-    for linha in linhas:
-        bairros, renda = linha.split('-')
-        for nome in bairros.split(','):
-            bairro_por_chave[CODIGO_MUNICIPIO_RJ, nome] = Bairro(
-                id=bairro_id,
-                codigo_municipio=CODIGO_MUNICIPIO_RJ,
-                nome=nome,
-                renda=renda)
-            bairro_id += 1
-
-    return bairro_por_chave
-
-
-def recupera_zonas_eleitorais(bairro_por_chave):
+def recupera_zonas_eleitorais():
     """Retorna lista de zonas."""
     linhas = [i.strip() for i in dados_rj.ze.split(';')][:-1]
 
-    zona_id = 1
     zonas = []
     for linha in linhas:
         numero_zona, nome_bairro = linha.split('-')
-        try:
-            bairro = bairro_por_chave[CODIGO_MUNICIPIO_RJ, nome_bairro]
-        except KeyError:
-            logging.exception('Bairro nao localizado.')
-            continue
-
         zonas.append(
-            ZonaEleitoral(
-                id=zona_id, numero_zona=numero_zona, bairro_id=bairro.id))
-        zona_id += 1
+            ZonaEleitoral(CODIGO_MUNICIPIO_RJ, numero_zona, nome_bairro))
 
     return zonas
+
+
+def recupera_rendas(zonas):
+    """Retorna lista de rendas."""
+    linhas = [i.strip() for i in dados_rj.renda.split(';')][:-1]
+
+    renda_por_chave = {}
+    for linha in linhas:
+        bairros, renda = linha.split('-')
+        for nome in bairros.split(','):
+            renda_por_chave[CODIGO_MUNICIPIO_RJ, nome] = renda
+
+    renda_id = 1
+    rendas = []
+    for zona in zonas:
+        try:
+            valor_renda = renda_por_chave[zona.codigo_municipio, zona.bairro]
+        except KeyError:
+            logging.exception('Bairro com renda não encontrado.')
+            continue
+
+        rendas.append(
+            Renda(renda_id, zona.codigo_municipio, valor_renda, zona.bairro,
+                  zona.numero_zona))
+        renda_id += 1
+
+    return rendas
 
 
 def insere_eleicoes(eleicoes_por_id):
@@ -378,7 +370,6 @@ def insere_votacoes(votacoes):
         CONNECTION.execute(VOTACAO.insert().values(
             id=votacao.id,
             data_geracao=votacao.data_geracao,
-            eleicao_id=votacao.eleicao_id,
             numero_zona=votacao.numero_zona,
             candidato_id=votacao.candidato_id,
             total_votos=votacao.total_votos))
@@ -427,22 +418,15 @@ def insere_coligacoes(coligacao_por_numero, partido_por_sigla):
             composicao_id += 1
 
 
-def insere_bairros(bairros_por_chave):
-    """Insere bairros."""
-    for bairro in bairros_por_chave.values():
-        CONNECTION.execute(BAIRRO.insert().values(
-            id=bairro.id,
-            codigo_municipio=bairro.codigo_municipio,
-            nome=bairro.nome,
-            renda=bairro.renda))
-
-
-def insere_zonas_eleitorais(zonas_eleitorais):
-    """Insere zonas eleitorais."""
-    for zona in zonas_eleitorais:
-        CONNECTION.execute(ZONA_ELEITORAL.insert().values(
-            id=zona.id, numero_zona=zona.numero_zona,
-            bairro_id=zona.bairro_id))
+def insere_rendas(rendas):
+    """Insere rendas."""
+    for renda in rendas:
+        CONNECTION.execute(RENDA.insert().values(
+            id=renda.id,
+            codigo_municipio=renda.codigo_municipio,
+            valor_renda=renda.valor_renda,
+            bairro=renda.bairro,
+            numero_zona=renda.numero_zona))
 
 
 def main():
@@ -466,8 +450,8 @@ def main():
         recupera_partido(dados, partido_por_sigla)
         recupera_coligacao(dados, coligacao_por_numero)
 
-    bairro_por_chave = recupera_bairros()
-    zonas_eleitorais = recupera_zonas_eleitorais(bairro_por_chave)
+    zonas = recupera_zonas_eleitorais()
+    rendas = recupera_rendas(zonas)
 
     print('Término da recuperação de dados. Pressione enter para inserir.')
     input()
@@ -481,9 +465,7 @@ def main():
     insere_eleicoes(eleicoes_por_id)
     insere_candidatos(candidato_por_chave)
     insere_votacoes(votacoes)
-
-    insere_bairros(bairro_por_chave)
-    insere_zonas_eleitorais(zonas_eleitorais)
+    insere_rendas(rendas)
 
 
 if __name__ == '__main__':
